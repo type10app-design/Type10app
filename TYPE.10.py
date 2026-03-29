@@ -1,0 +1,707 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import random
+import sqlite3
+
+# ==================================================================================
+# 1. DATABASE & LOGIC SETUP
+# ==================================================================================
+conn = sqlite3.connect("app.db")
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS words (id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT NOT NULL)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS stats (user_id INTEGER, character TEXT, correct INTEGER, wrong INTEGER, PRIMARY KEY (user_id, character))
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS lesson_progress (user_id INTEGER, lesson_id INTEGER, completed_reps INTEGER, best_accuracy REAL, best_wpm REAL, completed INTEGER, PRIMARY KEY (user_id, lesson_id))
+""")
+conn.commit()
+word_list = ["dad","sad", "time","year","people","way","day","man","thing","woman","life","child",
+    "world","school","state","family","student","group","country","problem","hand","part",
+    "place","case","week","company","system","program","question","work","government","number",
+    "night","point","home","water","room","mother","area","money","story","fact",
+    "month","lot","right","study","book","eye","job","word","business","issue",
+    "side","kind","head","house","service","friend","father","power","hour","game",
+    "line","end","member","law","car","city","community","name","president","team",
+    "minute","idea","kid","body","information","back","parent","face","others","level",
+    "office","door","health","person","art","war","history","party","result","change",
+    "morning","reason","research","girl","guy","moment","air","teacher","force","education",
+    "type","keyboard","speed","accuracy","practice","focus","skill","training","lesson","input",
+    "output","system","data","code","python","logic","design","interface","user","database", "apple","orange","banana","grape","fruit","table","chair","window","screen","mouse",
+    "laptop","phone","charger","battery","signal","network","server","client","internet","browser",
+    "search","engine","website","login","password","security","access","control","admin","panel",
+    "button","click","scroll","select","option","menu","layout","theme","color","background",
+    "font","text","image","video","audio","file","folder","upload","download","storage",
+    "memory","process","thread","task","event","trigger","action","response","request","update",
+    "delete","create","insert","value","index","table","query","filter","sort","merge",
+    "build","compile","execute","debug","error","warning","exception","handle","return","import",
+    "export","module","package","library","framework","function","variable","object","class","method",
+    "loop","condition","boolean","string","integer","float","array","list","tuple","dictionary"
+]
+cursor.executemany(
+    "INSERT OR IGNORE INTO words (word) VALUES (?)",
+    [(w,) for w in word_list]
+)
+conn.commit()
+
+
+current_user_id = 1
+user_stats = {}
+
+
+def update_stat(char, correct):
+    if current_user_id is None: return
+    # Initialize from DB if not in memory
+    if char not in user_stats:
+        cursor.execute("SELECT correct, wrong FROM stats WHERE user_id=? AND character=?", (current_user_id, char))
+        row = cursor.fetchone()
+        if row:
+            user_stats[char] = {"correct": row[0], "wrong": row[1]}
+        else:
+            user_stats[char] = {"correct": 0, "wrong": 0}
+
+    if correct:
+        user_stats[char]["correct"] += 1
+    else:
+        user_stats[char]["wrong"] += 1
+
+    cursor.execute(
+        "INSERT INTO stats (user_id, character, correct, wrong) VALUES (?,?,?,?) ON CONFLICT(user_id, character) DO UPDATE SET correct=?, wrong=?",
+        (current_user_id, char, user_stats[char]["correct"], user_stats[char]["wrong"], user_stats[char]["correct"],
+         user_stats[char]["wrong"]))
+    conn.commit()
+
+
+# ==================================================================================
+# 2. VISUAL CLASSES
+# ==================================================================================
+
+class HackerButton(tk.Button):
+    def __init__(self, master, **kwargs):
+        kwargs.setdefault('font', ("Courier", 16, "bold"))
+        kwargs.setdefault('bg', "black")
+        kwargs.setdefault('fg', "black")
+        kwargs.setdefault('activebackground', "black")
+        kwargs.setdefault('activeforeground', "black")
+        kwargs.setdefault('bd', 2)
+        kwargs.setdefault('relief', "flat")
+        super().__init__(master, **kwargs)
+        self.bind("<Enter>", lambda e: self.config(bg="black", fg="#00E5FF"))
+        self.bind("<Leave>", lambda e: self.config(bg="white", fg="black"))
+
+
+class MatrixRain(tk.Canvas):
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.configure(bg="black", highlightthickness=0)
+        self.width = 2000
+        self.height = 2000
+        self.columns = int(self.width / 14)
+        self.drops = [random.randint(-50, 0) for _ in range(self.columns)]
+        self.animate()
+
+    def animate(self):
+        self.delete("rain")
+        for i in range(len(self.drops)):
+            char = random.choice("0123456789XYZ<>*&^%$#@!")
+            x, y = i * 20, self.drops[i] * 20
+            self.create_text(x, y, text=char, fill="#00E5FF", font=("Courier", 12), tag="rain")
+            if self.drops[i] * 14 > self.winfo_height() and random.random() > 0.975: self.drops[i] = 0
+            self.drops[i] += 1
+        self.after(50, self.animate)
+
+
+# ==================================================================================
+# 3. APP LOGIC
+# ==================================================================================
+root = tk.Tk()
+root.title("Type.10 [SYSTEM_INTEGRITY]")
+root.geometry("1200x800")
+root.configure(bg="black")
+
+style = ttk.Style()
+style.theme_use('default')
+style.configure("Hacker.Horizontal.TProgressbar", thickness=20, troughcolor="#002200", background="#00E5FF",
+                bordercolor="#00E5FF")
+
+# --- Global States ---
+running = False
+total_chars_typed = 0
+target_text = ""
+time_left = 30
+
+LESSONS = [
+    {"id": 1, "name": "Home Row [F J]", "chars": ["f","j"], "min_accuracy": 90, "min_wpm": 10, "repetitions": 10},
+
+    {"id": 2, "name": "Home Row [D K]", "chars": ["f","j","d","k"], "min_accuracy": 90, "min_wpm": 12, "repetitions": 12},
+
+    {"id": 3, "name": "Home Row [S L]", "chars": ["f","j","d","k","s","l"], "min_accuracy": 90, "min_wpm": 14, "repetitions": 12},
+
+    {"id": 4, "name": "Home Row [A ;]", "chars": ["f","j","d","k","s","l","a",";"], "min_accuracy": 90, "min_wpm": 16, "repetitions": 14},
+
+    {"id": 5, "name": "Top Row [E I]", "chars": ["f","j","d","k","s","l","a",";","e","i"], "min_accuracy": 90, "min_wpm": 18, "repetitions": 14},
+
+    {"id": 6, "name": "Top Row [R U]", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u"], "min_accuracy": 90, "min_wpm": 20, "repetitions": 16},
+
+    {"id": 7, "name": "Top Row [W O]", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u","w","o"], "min_accuracy": 90, "min_wpm": 22, "repetitions": 16},
+
+    {"id": 8, "name": "Top Row [Q P]", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u","w","o","q","p"], "min_accuracy": 90, "min_wpm": 24, "repetitions": 18},
+
+    {"id": 9, "name": "Bottom Row [C M]", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u","w","o","q","p","c","m"], "min_accuracy": 90, "min_wpm": 26, "repetitions": 18},
+
+    {"id": 10, "name": "Bottom Row [V ,]", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u","w","o","q","p","c","m","v",","], "min_accuracy": 90, "min_wpm": 28, "repetitions": 20},
+
+    {"id": 11, "name": "Bottom Row [X .]", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u","w","o","q","p","c","m","v",",","x","."], "min_accuracy": 90, "min_wpm": 30, "repetitions": 20},
+
+    {"id": 12, "name": "Bottom Row [Z /]", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u","w","o","q","p","c","m","v",",","x",".","z","/"], "min_accuracy": 90, "min_wpm": 32, "repetitions": 22},
+
+    {"id": 13, "name": "Full Keyboard Practice", "chars": ["f","j","d","k","s","l","a",";","e","i","r","u","w","o","q","p","c","m","v",",","x",".","z","/"], "min_accuracy": 92, "min_wpm": 35, "repetitions": 25},
+
+]
+
+current_lesson, lesson_target = None, ""
+lesson_reps = lesson_correct = lesson_total = 0
+
+
+def show_frame(frame): frame.tkraise()
+
+def exit_program():
+    confirm = messagebox.askyesno(
+        "Exit Program",
+        "Are you sure you want to close Type.10?"
+    )
+
+
+
+    if confirm:
+        conn.close()   # close database safely
+        root.destroy() # close window
+
+# --- Training Logic --- ________________________________________________________________________________________________________________________________________
+def start_weakspot_training():
+    global current_lesson, lesson_reps, lesson_correct, lesson_total
+    # Find chars with highest error rate
+    cursor.execute("SELECT character, correct, wrong FROM stats WHERE (correct + wrong) > -1")
+    rows = cursor.fetchall()
+
+    scores = []
+
+    for char, correct, wrong in rows:
+        attempts = correct + wrong
+        error_rate = wrong / attempts
+        score = error_rate * (attempts ** 0.5)  # weighted score
+        scores.append((score, char))
+
+    scores.sort(reverse=True)
+
+    weak_chars = [char for score, char in scores[:5]]
+
+    if not weak_chars: weak_chars = ["f", "j", "d", "k"]  # Default if no data
+
+    current_lesson = {
+
+    "id": 999, "name": "WEAKSPOT_TRAINING", "chars": weak_chars,
+        "min_accuracy": 0, "repetitions": 15
+    }
+    focus_char = weak_chars[0] if weak_chars else "?"
+    training_letter_label.config(text=f"TRAINING LETTER: {focus_char.upper()}")
+
+    setup_lesson_session()
+
+
+def manual_start_lesson(lesson):
+    global current_lesson
+    current_lesson = lesson
+    training_letter_label.config(text="TRAINING: LESSON")
+    setup_lesson_session()
+
+
+def setup_lesson_session():
+    global lesson_reps, lesson_correct, lesson_total
+    lesson_reps = lesson_correct = lesson_total = 0
+    accuracy_live_label.config(text="ACCURACY: 100%")
+    lesson_entry.delete(0, tk.END)
+    generate_lesson_word()
+    render_lesson_text()
+    show_frame(lesson_frame)
+    lesson_entry.focus_set()
+
+def get_char_stat(c):
+    return user_stats.get(c, {"correct": 1, "wrong": 1})
+
+
+def generate_lesson_word():
+    global lesson_target, lesson_reps
+    chars = current_lesson["chars"]
+
+    weights = []
+    for c in chars:
+        stat = get_char_stat(c)
+        attempts = stat["correct"] + stat["wrong"]
+        error_rate = stat["wrong"] / attempts
+        weights.append(1 + error_rate * 3)
+
+    lesson_target = "".join(random.choices(chars, weights=weights, k=5))
+
+    lesson_reps += 1
+    rep_counter_label.config(text=f"REP: {lesson_reps}/{current_lesson['repetitions']}")
+
+
+def lesson_key(event):
+    global lesson_correct, lesson_total
+    typed = lesson_entry.get()
+    if not typed: return
+    idx = len(typed) - 1
+    if idx < len(lesson_target):
+        lesson_total += 1
+        if typed[idx] == lesson_target[idx]:
+            lesson_correct += 1
+            update_stat(typed[idx], True)
+        else:
+            update_stat(typed[idx], False)
+
+    acc = (lesson_correct / lesson_total) * 100 if lesson_total > 0 else 100
+    accuracy_live_label.config(text=f"ACCURACY: {int(acc)}%", fg="#00E5FF" if acc > 85 else "red")
+    render_lesson_text()
+
+    if typed == lesson_target:
+        lesson_entry.delete(0, tk.END)
+        if lesson_reps >= current_lesson["repetitions"]:
+            finish_lesson(acc)
+        else:
+            generate_lesson_word()
+            render_lesson_text()
+
+def refresh_stats():
+        stats_table.config(state="normal")
+        stats_table.delete("1.0", tk.END)
+
+        stats_table.insert(tk.END, "CHAR  CORRECT  WRONG  ACC\n")
+        stats_table.insert(tk.END, "---------------------------\n")
+
+        cursor.execute(
+            "SELECT character, correct, wrong FROM stats WHERE user_id=?",
+            (current_user_id,)
+        )
+
+        rows = cursor.fetchall()
+
+        for char, correct, wrong in rows:
+            attempts = correct + wrong
+            acc = int((correct / attempts) * 100) if attempts > 0 else 0
+
+            stats_table.insert(
+                tk.END,
+                f"{char.upper():<5}{correct:<9}{wrong:<7}{acc}%\n"
+            )
+
+        stats_table.config(state="disabled")
+
+
+def finish_lesson(final_acc):
+    if current_lesson and current_lesson['id'] == 999:
+        # Weakspot session complete - return to Core
+        show_frame(main_menu)
+    else:
+
+        wpm = (lesson_correct * 12) / 5
+        completed = final_acc >= current_lesson.get("min_accuracy", 0)
+        cursor.execute("INSERT INTO lesson_progress VALUES (?,?,?,?,?,?) ON CONFLICT(user_id, lesson_id) DO UPDATE SET completed=excluded.completed",
+                    (current_user_id, current_lesson["id"], lesson_reps, final_acc, wpm, int(completed)))
+        conn.commit()
+        refresh_lesson_list()
+        show_frame(lessons_menu)
+    messagebox.showinfo(
+        "Lesson Complete",
+        f"Accuracy: {int(final_acc)}%\nWPM: {int(wpm)}"
+    )
+
+
+# --- Speed Test Logic ---
+def get_random_word():
+    cursor.execute("SELECT word FROM words ORDER BY RANDOM() LIMIT 1")
+    return cursor.fetchone()[0]
+
+
+def start_speed_test():
+    global running, time_left, total_chars_typed, target_text
+
+    time_left = time_slider.get()
+    total_chars_typed = 0
+    running = True
+
+    speed_entry.config(state="normal")
+    speed_entry.delete(0, tk.END)
+    speed_entry.focus_set()
+
+    result_label.config(text="")
+
+    target_text = get_random_word()
+    update_speed_display()
+
+    start_test_btn.config(state="disabled", text="[ ACTIVE ]")
+
+    speed_countdown()
+
+
+def exit_speed_test():
+    global running, target_text
+    running = False
+
+    # Reset input
+    speed_entry.config(state="normal")
+    speed_entry.delete(0, tk.END)
+    speed_entry.config(state="disabled")
+
+    # Reset display
+    speed_display.config(state="normal")
+    speed_display.delete("1.0", tk.END)
+    speed_display.config(state="disabled")
+
+    # Reset variables
+    target_text = ""
+
+    # Reset UI elements
+    start_test_btn.config(state="normal", text="▶ EXECUTE")
+    result_label.config(text="")
+    timer_label.config(text=f"TIME: {time_slider.get()}s")
+
+    show_frame(main_menu)
+
+
+
+def speed_countdown():
+    global time_left
+    if not running: return
+    if time_left > 0:
+        time_left -= 1
+        timer_label.config(text=f"TIME: {time_left}s")
+        root.after(1000, speed_countdown)
+    else:
+        finish_speed_test()
+
+
+def finish_speed_test():
+    global running
+    running = False
+    speed_entry.config(state="disabled")
+    wpm = (total_chars_typed / 4.7) / (time_slider.get() / 60)
+    result_label.config(text=f">> RESULT: {wpm:.1f} WPM <<")
+    start_test_btn.config(state="normal", text="▶ EXECUTE")
+
+
+def speed_key_release(event):
+    global total_chars_typed, target_text
+    if not running: return
+    typed = speed_entry.get()
+    update_speed_display()
+    if typed == target_text:
+        total_chars_typed += len(target_text) + 1
+        speed_entry.delete(0, tk.END)
+        target_text = get_random_word()
+        update_speed_display()
+
+
+def update_speed_display():
+    speed_display.config(state="normal")
+    speed_display.delete("1.0", tk.END)
+    typed = speed_entry.get()
+    for i, char in enumerate(target_text):
+        if i < len(typed):
+            tag = "green" if typed[i] == char else "red"
+            speed_display.insert(tk.END, char, tag)
+        else:
+            speed_display.insert(tk.END, char, "white")
+    speed_display.tag_add("center", "1.0", "end")
+    speed_display.config(state="disabled")
+
+def refresh_heatmap():
+        heatmap_canvas.delete("all")
+
+        # QWERTY layout
+        rows = ["QWERTYUIOP/", "ASDFGHJKL;", "ZXCVBNM,."]
+        start_x, start_y = 50, 50
+        key_spacing = 60
+        key_size = 40
+
+        for row_idx, row in enumerate(rows):
+            y = start_y + row_idx * key_spacing
+            for col_idx, char in enumerate(row):
+                x = start_x + col_idx * key_spacing + (row_idx * 30)  # offset smaller rows
+                # get stats
+                stat = user_stats.get(char.lower(), {"correct": 1, "wrong": 0})
+                wrong = stat["wrong"]
+                correct = stat["correct"]
+                attempts = correct + wrong
+                error_rate = wrong / attempts if attempts > 0 else 0
+
+                # color gradient
+                red = int(min(255, 255 * error_rate))
+                green = int(min(255, 255 * (1 - error_rate)))
+                color = f"#{red:02x}{green:02x}00"
+
+                heatmap_canvas.create_rectangle(
+                    x, y, x + key_size, y + key_size,
+                    fill=color, outline="#00E5FF"
+                )
+                heatmap_canvas.create_text(
+                    x + key_size / 2, y + key_size / 2,
+                    text=char.upper(),
+                    fill="white",
+                    font=("Courier", 16, "bold")
+                )
+
+
+# ==================================================================================
+# 4. UI LAYOUT
+# ==================================================================================
+
+main_menu = tk.Frame(root, bg="black")
+lessons_menu = tk.Frame(root, bg="black")
+lesson_frame = tk.Frame(root, bg="black")
+game_frame = tk.Frame(root, bg="black")
+stats_frame = tk.Frame(root, bg="black")
+heatmap_frame = tk.Frame(root, bg="black")
+for frame in (main_menu, lessons_menu, lesson_frame, game_frame, stats_frame, heatmap_frame):
+    frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+
+
+for frame in (main_menu, lessons_menu, lesson_frame, game_frame, stats_frame):
+    frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+# --- MAIN MENU ---
+matrix_canvas = MatrixRain(main_menu)
+matrix_canvas.pack(fill="both", expand=True)
+
+main_menu_container = tk.Frame(matrix_canvas, bg="black")
+main_menu_window = matrix_canvas.create_window(600, 400, window=main_menu_container, anchor="center")
+
+
+def on_resize(event):
+
+    if event.widget == root:
+
+        w = root.winfo_width()
+        h = root.winfo_height()
+        matrix_canvas.coords(main_menu_window, w // 2, h // 2)
+
+
+root.bind("<Configure>", on_resize)
+
+# --- HEATMAP FRAME ---
+heatmap_container = tk.Frame(heatmap_frame, bg="black")
+heatmap_container.place(relx=0.5, rely=0.5, anchor="center")
+
+tk.Label(
+    heatmap_container,
+    text="KEYBOARD HEATMAP",
+    font=("Courier", 36, "bold"),
+    fg="#00E5FF",
+    bg="black"
+).pack(pady=20)
+
+heatmap_canvas = tk.Canvas(
+    heatmap_container,
+    width=700,
+    height=250,
+    bg="black",
+    highlightthickness=0
+)
+heatmap_canvas.pack(pady=10)
+
+HackerButton(
+    heatmap_container,
+    text="< RETURN",
+    command=lambda: show_frame(main_menu),
+    width=20
+).pack(pady=20)
+
+
+tk.Label(main_menu_container, text="// TYPE.10 //", font=("Courier", 50, "bold"), fg="#00E5FF", bg="black").pack(
+    pady=30)
+HackerButton(main_menu_container, text="[ ACCESS LESSONS ]",
+             command=lambda: (refresh_lesson_list(), show_frame(lessons_menu)), width=25).pack(pady=10)
+HackerButton(main_menu_container, text="[ WEAKSPOT TRAINING ]", command=start_weakspot_training, width=25).pack(pady=10)
+HackerButton(main_menu_container, text="[ SPEED TEST ]", command=lambda: show_frame(game_frame), width=25).pack(pady=10)
+HackerButton(main_menu_container, text="[ VIEW STATS ]",
+             command=lambda: (refresh_stats(), show_frame(stats_frame)),
+             width=25).pack(pady=10)
+HackerButton(
+    main_menu_container,
+    text="[ KEYBOARD HEATMAP ]",
+    command=lambda: (refresh_heatmap(), show_frame(heatmap_frame)),
+    width=25
+).pack(pady=10)
+HackerButton(
+    main_menu_container,
+    text="[ RESET STATS ]",
+    command=lambda: (
+        cursor.execute("DELETE FROM stats WHERE user_id=?", (current_user_id,)),
+        conn.commit(),
+        user_stats.clear(),
+        refresh_stats(),
+        refresh_heatmap()
+    ),
+    width=25
+).pack(pady=10)
+
+HackerButton(
+    main_menu_container,
+    text="[ EXIT PROGRAM ]",
+    command=exit_program,
+    width=25
+).pack(pady=10)
+
+
+
+
+# --- STATS FRAME ---
+
+stats_container = tk.Frame(stats_frame, bg="black")
+stats_container.place(relx=0.5, rely=0.5, anchor="center")
+
+tk.Label(
+    stats_container,
+    text="USER STATISTICS",
+    font=("Courier", 36, "bold"),
+    fg="#00E5FF",
+    bg="black"
+).pack(pady=20)
+
+stats_table = tk.Text(
+    stats_container,
+    height=15,
+    width=40,
+    font=("Courier", 16),
+    bg="black",
+    fg="#00E5FF",
+    bd=0
+)
+
+stats_table.pack(pady=10)
+
+HackerButton(
+    stats_container,
+    text="< RETURN",
+    command=lambda: show_frame(main_menu),
+    width=20
+).pack(pady=20)
+
+# --- LESSONS MENU ---
+l_menu_container = tk.Frame(lessons_menu, bg="black")
+l_menu_container.place(relx=0.5, rely=0.5, anchor="center")
+
+tk.Label(l_menu_container, text="TRAINING_PROTOCOL", font=("Courier", 36, "bold"), fg="#00E5FF", bg="black").pack(
+    pady=10)
+lesson_list_frame = tk.Frame(l_menu_container, bg="black")
+lesson_list_frame.pack(pady=10)
+
+
+def refresh_lesson_list():
+    for widget in lesson_list_frame.winfo_children():
+        widget.destroy()
+
+    for lesson in LESSONS:
+        cursor.execute("SELECT completed FROM lesson_progress WHERE user_id=? AND lesson_id=?",
+                       (current_user_id, lesson["id"]))
+        row = cursor.fetchone()
+        is_done = row and row[0] == 1
+
+        status = "[COMPLETED]" if is_done else "[INCOMPLETE]"
+        color = "#00E5FF" if is_done else "black"
+
+        HackerButton(lesson_list_frame, text=f"{lesson['name']} {status}", fg=color, width=35,
+                     command=lambda l=lesson: manual_start_lesson(l)).pack(pady=5)
+
+
+HackerButton(l_menu_container, text="< RETURN", command=lambda: show_frame(main_menu), width=20).pack(pady=20)
+
+# --- LESSON FRAME ---
+l_frame_container = tk.Frame(lesson_frame, bg="black")
+l_frame_container.place(relx=0.5, rely=0.5, anchor="center")
+
+info_row = tk.Frame(l_frame_container, bg="black")
+info_row.pack(fill="x", pady=10)
+training_letter_label = tk.Label(
+    l_frame_container,
+    text="TRAINING:",
+    font=("Courier", 20, "bold"),
+    fg="#00E5FF",
+    bg="black"
+)
+training_letter_label.pack()
+rep_counter_label = tk.Label(info_row, text="REP: 0/0", font=("Courier", 18), fg="#00E5FF", bg="black")
+rep_counter_label.pack(side="left")
+accuracy_live_label = tk.Label(info_row, text="ACCURACY: 100%", font=("Courier", 18), fg="#00E5FF", bg="black")
+accuracy_live_label.pack(side="right")
+
+lesson_display = tk.Text(l_frame_container, height=1, width=30, font=("Courier", 40), bg="black", bd=0,
+                         highlightthickness=0)
+lesson_display.tag_configure("center", justify="center")
+lesson_display.tag_configure("green", foreground="#00E5FF")
+lesson_display.tag_configure("red", foreground="red")
+lesson_display.tag_configure("white", foreground="#333333")
+lesson_display.pack(pady=20)
+
+lesson_entry = tk.Entry(l_frame_container, font=("Courier", 28), justify="center", bg="black", fg="#00E5FF",
+                        insertbackground="#00E5FF")
+lesson_entry.pack(pady=20)
+lesson_entry.bind("<KeyRelease>", lesson_key)
+
+
+def render_lesson_text():
+    lesson_display.config(state="normal")
+    lesson_display.delete("1.0", tk.END)
+    typed = lesson_entry.get()
+    for i, c in enumerate(lesson_target):
+        tag = "green" if i < len(typed) and typed[i] == c else "red" if i < len(typed) else "white"
+        lesson_display.insert(tk.END, c, tag)
+    lesson_display.tag_add("center", "1.0", "end")
+    lesson_display.config(state="disabled")
+
+
+
+HackerButton(l_frame_container, text="< ABORT",
+             command=lambda: show_frame(main_menu) if current_lesson['id'] == 999 else show_frame(lessons_menu),
+             width=15).pack(pady=20)
+
+# --- SPEED FRAME ---
+s_frame_container = tk.Frame(game_frame, bg="black")
+s_frame_container.place(relx=0.5, rely=0.5, anchor="center")
+
+tk.Label(s_frame_container, text="SPEED_DIAGNOSTIC", font=("Courier", 36, "bold"), fg="#00E5FF", bg="black").pack(
+    pady=10)
+time_slider = tk.Scale(s_frame_container, from_=10, to=120, orient="horizontal", bg="black", fg="#00E5FF", length=300,
+                       label="SEC")
+time_slider.set(30)
+time_slider.pack()
+
+timer_label = tk.Label(s_frame_container, text="TIME: 30s", font=("Courier", 20), fg="#00E5FF", bg="black")
+timer_label.pack()
+
+speed_display = tk.Text(s_frame_container, height=1, width=30, font=("Courier", 36), bg="black", bd=0)
+speed_display.tag_configure("center", justify="center")
+speed_display.tag_configure("green", foreground="#00E5FF")
+speed_display.tag_configure("red", foreground="red")
+speed_display.tag_configure("white", foreground="#888")
+speed_display.pack(pady=20)
+
+speed_entry = tk.Entry(s_frame_container, font=("Courier", 28), justify="center", bg="black", fg="#00E5FF",
+                       insertbackground="#00E5FF")
+speed_entry.pack(pady=10)
+speed_entry.bind("<KeyRelease>", speed_key_release)
+
+start_test_btn = HackerButton(s_frame_container, text="▶ EXECUTE", command=start_speed_test, width=15)
+start_test_btn.pack(pady=10)
+
+result_label = tk.Label(s_frame_container, text="", font=("Courier", 20, "bold"), fg="#FFFF00", bg="black")
+result_label.pack()
+
+HackerButton(s_frame_container, text="< RETURN", command=exit_speed_test, width=15).pack(pady=10)
+
+show_frame(main_menu)
+root.mainloop()

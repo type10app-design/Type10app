@@ -1,0 +1,10 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# PyInstaller build folders
+dist/
+build/
+
+# Database (optional)
+app.db
